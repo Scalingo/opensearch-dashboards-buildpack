@@ -126,7 +126,7 @@ fi
 # From this point we have a valid file in cache.
 
 cmn::task::start "Extracting"
-if ! tar --extract --strip-components=2 \
+if ! tar --extract --strip-components=1 \
 		--file="${cache_file}" --directory="${tmp_dir}" 2>/dev/null
 then
 	cmn::task::fail <<- EOM
