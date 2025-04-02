@@ -1,5 +1,5 @@
 ---
-server.host: 0.0.0.0:$PORT
+server.host: "0.0.0.0:${PORT}"
 
 opensearch.hosts: ["${OPENSEARCH_URL}"]
 opensearch.ssl.verificationMode: none
