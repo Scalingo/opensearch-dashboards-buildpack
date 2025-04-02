@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-cat <<<EOF
+cat << EOF
 ---
-web: $HOME/bin/opensearch-dashboards
+default_process_types:
+  web: /app/bin/opensearch-dashboards
 EOF
