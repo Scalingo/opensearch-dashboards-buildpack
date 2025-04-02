@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+echo "OpenSearch Dashboards"
+exit 0
