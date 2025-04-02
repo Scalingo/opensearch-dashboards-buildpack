@@ -138,7 +138,7 @@ fi
 cmn::task::finish
 
 cmn::task::start "Installing"
-if ! mv "${tmp_dir}/opensearch-dashboards-${version}"* \
+if ! mv "${tmp_dir}/opensearch-dashboards-${version}/"* \
 		--target-directory="${build_dir}" 2>/dev/null
 then
 	cmn::task::fail <<- EOM
