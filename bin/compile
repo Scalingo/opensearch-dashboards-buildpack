@@ -126,8 +126,7 @@ fi
 # From this point we have a valid file in cache.
 
 cmn::task::start "Extracting"
-if ! tar --extract --strip-components=1 \
-		--file="${cache_file}" --directory="${tmp_dir}" 2>/dev/null
+if ! tar --extract --file="${cache_file}" --directory="${tmp_dir}" 2>/dev/null
 then
 	cmn::task::fail <<- EOM
 		An error occured while extracting the archive.
@@ -138,18 +137,18 @@ then
 fi
 cmn::task::finish
 
-#cmn::task::start "Installing"
-#if ! mv "${tmp_dir}/opensearch-dashboards-${version}-linux-x64/opensearch-dashboards-${version}"* \
-#		--target-directory="${build_dir}" 2>/dev/null
-#then
-#	cmn::task::fail <<- EOM
-#		An error occured while installing the files.
-#		Aborting.
-#	EOM
-#	cmn::step::fail
-#	exit 32
-#fi
-#cmn::task::finish
+cmn::task::start "Installing"
+if ! mv "${tmp_dir}/opensearch-dashboards-${version}"* \
+		--target-directory="${build_dir}" 2>/dev/null
+then
+	cmn::task::fail <<- EOM
+		An error occured while installing the files.
+		Aborting.
+	EOM
+	cmn::step::fail
+	exit 32
+fi
+cmn::task::finish
 
 cmn::step::finish
 
