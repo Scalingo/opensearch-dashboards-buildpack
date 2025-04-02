@@ -150,6 +150,20 @@ then
 fi
 cmn::task::finish
 
+cmn::task::start "Configuring"
+if ! cp "${buildpack_dir}/files/opensearch_dashboards.yml" \
+		"${build_dir}/config/opensearch_dashboards.yml" 2>/dev/null
+then
+	cmn::task::fail <<- EOM
+		An error occured while installing the files.
+		Aborting.
+	EOM
+	cmn::step::fail
+	exit 33
+fi
+cmn::task::finish
+
+
 cmn::step::finish
 
 # -----------------------------------------------------------------------------

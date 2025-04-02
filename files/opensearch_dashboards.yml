@@ -1,0 +1,8 @@
+---
+opensearch.hosts: ["${OPENSEARCH_URL}"]
+opensearch.ssl.verificationMode: none
+opensearch.requestHeadersWhitelist: [authorization, securitytenant]
+
+  #opensearch_security.multitenancy.enabled: true
+  #opensearch_security.multitenancy.tenants.preferred: [Private, Global]
+  #opensearch_security.readonly_mode.roles: [kibana_read_only]
