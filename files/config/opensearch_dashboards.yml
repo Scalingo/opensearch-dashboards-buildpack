@@ -1,11 +1,29 @@
 ---
 # /!\
-# This file is generated at runtime by .profile.d/050-opensearch-dashboards.sh
-# If you're checking this from a one-off, chances are this file is empty.
+# This file is partly generated at runtime by
+#    .profile.d/050-opensearch-dashboards.sh
+# If you're checking this from a one-off, chances are this file is not full.
 # Please run the .profile.d script to get it populated.
 #
-opensearch.ssl.verificationMode: none
-opensearch.requestHeadersWhitelist: [authorization, securitytenant]
-#opensearch_security.multitenancy.enabled: true
-#opensearch_security.multitenancy.tenants.preferred: [Private, Global]
-#opensearch_security.readonly_mode.roles: [kibana_read_only]
+opensearch:
+  ssl:
+    verificationMode: none
+  requestHeadersAllowlist:
+    - authorization
+    - securitytenant
+
+      #options:
+      #freeSocketTimeout: 
+
+opensearch_security:
+  cookie:
+    secure: true
+  multitenancy:
+    enabled: true
+    tenants:
+      preferred:
+        - Private
+        - Global
+  readonly_mode:
+    roles:
+      - kibana_read_only
