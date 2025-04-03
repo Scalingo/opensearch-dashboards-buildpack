@@ -79,7 +79,7 @@ if [ -f "${cache_file}" ]; then
 		cmn::task::start "Checking file validity"
 
 		cmn::output::info "TEMP: Skipping"
-		cmn::task::finish
+		#cmn::task::finish
 
 		#if ! cmn::file::check_checksum "${cache_file}" "${hash_path}"; then
 			#cmn::task::fail

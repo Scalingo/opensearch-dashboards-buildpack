@@ -5,15 +5,10 @@
 # If you're checking this from a one-off, chances are this file is not full.
 # Please run the .profile.d script to get it populated.
 #
-opensearch:
-  ssl:
-    verificationMode: none
-  requestHeadersAllowlist:
-    - authorization
-    - securitytenant
-
-      #options:
-      #freeSocketTimeout: 
+opensearch.ssl.verificationMode: none
+opensearch.requestHeadersAllowlist:
+  - authorization
+  - securitytenant
 
 opensearch_security:
   cookie:
