@@ -10,7 +10,6 @@ server:
   host: 0.0.0.0
   port: ${PORT}
 
-opensearch:
-  hosts:
-    - "${OPENSEARCH_URL}"
+opensearch.hosts:
+  - "${OPENSEARCH_URL}"
 EOF
