@@ -56,7 +56,7 @@ cmn::output::err() {
 		printf " !!  %b\n" "${line}" >&2
 	done
 
-	if [[ -n "${DEBUG}" ]]; then
+	if [ -n "${DEBUG}" ]; then
 		cmn::output::traceback
 	fi
 }
@@ -82,7 +82,7 @@ cmn::output::debug() {
 	# Read `stdin` line by line and outputs each line formatted.
 	# We also add some traceback information (filename, function and lineno)
 	while read -r line; do
-		printf " *   %s: %s: %s: %s\n" \
+		printf " *   %s: %s: %s: %b\n" \
 			"${BASH_SOURCE[1]}" \
 			"${FUNCNAME[1]}" \
 			"${BASH_LINENO[0]}" \
@@ -130,7 +130,8 @@ cmn::trap::teardown() {
 
 cmn::main::start() {
 #
-# Configures Bash options and marks the beginning of the buildpack.
+# Configures Bash options, populates a few global variables and marks the
+# beginning of the buildpack.
 #
 # Calls `cmn::trap::setup`.
 # Use this function at the beginning of the buildpack.
@@ -143,19 +144,57 @@ cmn::main::start() {
 		set -o xtrace
 	fi
 
+	build_dir="${2:-}"
+	cache_dir="${3:-}"
+	env_dir="${4:-}"
+
+	base_dir="$( cd -P "$( dirname "${1}" )" && pwd )"
+	buildpack_dir="$( readlink -f "${base_dir}/.." )"
+	tmp_dir="$( mktemp --directory --tmpdir="/tmp" --quiet "bp-XXXXXX" )"
+
+	cmn::output::debug <<-EOM
+		build_dir:     ${build_dir}
+		cache_dir:     ${cache_dir}
+		env_dir:       ${env_dir}
+		buildpack_dir: ${buildpack_dir}
+		tmp_dir:       ${tmp_dir}
+	EOM
+
+	pushd "${build_dir}" > /dev/null
+
 	cmn::trap::setup
+}
+
+cmn::main::end() {
+#
+# /!\ Not to be called directly /!\
+#
+# Please use `cmn::main::finish` or `cmn::main::fail` instead.
+# Calls `cmn::trap::teardown`.
+#
+
+	cmn::trap::teardown
+
+	pushd "${build_dir}" > /dev/null
+
+	unset build_dir
+	unset cache_dir
+	unset env_dir
+	unset base_dir
+	unset buildpack_dir
+	unset tmp_dir
 }
 
 cmn::main::finish() {
 #
 # Outputs a success message and exits with a `0` return code, thus
 # instructing the platform that the buildpack ran successfully.
-# Calls `cmn::trap::teardown`.
+# Calls `cmn::main::end`.
 # Use this function as the last instruction of the buildpack, when it
 # succeeded.
 #
 
-	cmn::trap::teardown
+	cmn::main::end
 	printf "\n%b\n" "All done."
 	exit 0
 }
@@ -165,12 +204,12 @@ cmn::main::fail() {
 # Outputs an error message and exits with a `1` return code, thus
 # instructing the platform that the buildpack failed (and so did the
 # build).
-# Calls `cmn::trap::teardown`.
+# Calls `cmn::main::end`.
 # Use this function as the last instruction of the buildpack, when it
 # failed.
 #
 
-	cmn::trap::teardown
+	cmn::main::end
 	printf "\n%b\n" "Failed." >&2
 	exit 1
 }
@@ -202,7 +241,7 @@ cmn::step::fail() {
 # Use this function when the step failed.
 #
 
-	printf " %b\n" "Failed."
+	printf "     %b\n" "Failed."
 }
 
 
@@ -234,7 +273,9 @@ cmn::task::fail() {
 
 	echo "Failed."
 
-	[[ -n "${1}" ]] && cmn::output::err "${1}"
+	if [ -n "${1}" ]; then
+		cmn::output::err "${1}"
+	fi
 }
 
 
@@ -245,24 +286,17 @@ cmn::file::check_checksum() {
 # the reference file.
 # md5, sha1 and sha256 hashing algorithm are currently supported.
 #
-# $1: path to the file
-# $2: path to the checksum file
+# $1: file
+# $2: checksum file
 #
 
-	local rc
+	local -r file="${1}"
+	local -r hash_file="${2}"
 
-	local file
-	local hash_file
-	local hash_algo
-	local ref_hash
+	local -r hash_algo="${hash_file##*.}"
+	local -r ref_hash="$( cut -d " " -f 1 < "${hash_file}" )"
 
-	rc=1
-	file="${1}"; shift
-	hash_file="${1}"; shift
-
-	hash_algo="${hash_file##*.}"
-
-	ref_hash="$( cut -d " " -f 1 < "${hash_file}" )"
+	local rc=1
 
 	case "${hash_algo}" in
 		"sha1")
@@ -296,11 +330,8 @@ cmn::file::download() {
 # $2: (opt) Path where to output the downloaded file. Defaults to /dev/stdout.
 #
 
-	local url
-	local out
-
-	url="${1}"; shift
-	out="${1:-"-"}"; shift
+	local -r url="${1}"
+	local -r out="${2:-"-"}"
 
 	curl --silent --fail --retry 3 --location "${url}" --output "${out}"
 
@@ -325,18 +356,12 @@ cmn::file::download_and_check() {
 # $4: hash path (where to store the downloaded checksum file)
 #
 
-	local rc
+	local -r file_url="${1}"
+	local -r hash_url="${2}"
+	local -r file_path="${3}"
+	local -r hash_path="${4}"
 
-	local file_url
-	local hash_url
-	local file_path
-	local hash_path
-
-	rc=1
-	file_url="${1}"; shift
-	hash_url="${1}"; shift
-	file_path="${1}"; shift
-	hash_path="${1}"; shift
+	local rc=1
 
 	cmn::file::download "${file_url}" "${file_path}" &
 	cmn::file::download "${hash_url}" "${hash_path}" &
@@ -361,8 +386,7 @@ cmn::jobs::wait() {
 # In this case, `wait` should fail, so it shouldn't be an issue.
 #
 
-	local rc
-	rc=0
+	local rc=0
 
 	while read -r pid; do
     	if ! wait "${pid}"; then
@@ -376,17 +400,9 @@ cmn::jobs::wait() {
 
 
 cmn::str::join() {
-#
-# Outputs a string by joining all the arguments, separated by the given
-# separator.
-#
+	local -r separator="${1}"
 
-	local separator
 	local res
-
-	separator="${1}"
-	readonly separator
-	shift
 
 	res="$( printf "${separator}%s" "${@}" )"
 	# Remove leading separator:
@@ -398,17 +414,8 @@ cmn::str::join() {
 
 
 cmn::env::read() {
-#
-# Reads and exports environment variables stored as files in $ENV_DIR.
-# Use towards the beginning of the buildpack, especially if it can be called
-# after another buildpack (with a multi-buildpack).
-#
-
-	local env_dir
-	local env_vars
-
-	env_dir="${1}"
-	env_vars="$( cmn::env::list "${env_dir}" )"
+	local -r env_dir="${1}"
+	local -r env_vars="$( cmn::env::list "${env_dir}" )"
 
 	while read -r e; do
 		local value
@@ -419,20 +426,11 @@ cmn::env::read() {
 }
 
 cmn::env::list() {
-#
-# Lists available environement variables stored as files in $ENV_DIR.
-# A few environment variables are ignored: PATH, GIT_DIR, CPATH, CPPATH,
-# LD_PRELOAD, LIBRARY_PATH, LD_LIBRARY_PATH, JAVA_OPTS, JAVA_TOOL_OPTIONS,
-# BUILDPACK_URL and BUILD_DIR.
-#
+	local -r env_dir="${1}"
 
-	local env_dir
 	local env_vars
 	local blocklist
 	local blocklist_regex
-
-	env_dir="${1}"
-	env_vars=""
 
 	blocklist=( "PATH" "GIT_DIR" "CPATH" "CPPATH" )
 	blocklist+=( "LD_PRELOAD" "LIBRARY_PATH" "LD_LIBRARY_PATH" )
@@ -450,29 +448,20 @@ cmn::env::list() {
 							"${blocklist_regex}" )"
 	fi
 
-	echo "${env_vars}"
+	echo "${env_vars:=""}"
 }
 
 
 
 cmn::bp::run() {
-#
-# Git-clone a buildpack and runs it.
-#
+	local -r buildpack_url="${1}"
+	local -r build_dir="${2}"
+	local -r cache_dir="${3}"
+	local -r env_dir="${4}"
 
-	local rc
-	local buildpack_url
-	local build_dir
-	local cache_dir
-	local env_dir
-
-	rc=1
-	buildpack_url="${1}"; shift
-	build_dir="${1}"; shift
-	cache_dir="${1}"; shift
-	env_dir="${1}"; shift
-
+	local rc=1
 	local bp_dir
+
 	if ! bp_dir="$( mktemp --directory --tmpdir="/tmp" \
 						--quiet "sub_bp-XXXXXX" )"; then
 		return "${rc}"
@@ -517,6 +506,7 @@ readonly -f cmn::trap::setup
 readonly -f cmn::trap::teardown
 
 readonly -f cmn::main::start
+readonly -f cmn::main::end
 readonly -f cmn::main::finish
 readonly -f cmn::main::fail
 

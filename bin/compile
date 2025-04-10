@@ -9,28 +9,20 @@ cmnlib_url="https://github.com/Scalingo/cmnlib/raw/refs/tags/<version>/cmnlib.sh
 #		|| printf "echo ' 🗙 Unable to load cmnlib, aborting.' >&2 && exit 1"; )"
 #fi
 
-
-build_dir="${1:-}"
-cache_dir="${2:-}"
-#env_dir="${3:-}"
-base_dir="$( cd -P "$( dirname "${0}" )" && pwd )"
-buildpack_dir="$( readlink -f "${base_dir}/.." )"
-tmp_dir="$( mktemp --directory --tmpdir="/tmp" --quiet "bp-XXXXXX" )"
-
-readonly build_dir
-readonly cache_dir
-#readonly env_dir
-readonly base_dir
-readonly buildpack_dir
-readonly tmp_dir
-
 # shellcheck disable=SC1091
-source "${buildpack_dir}/cmnlib.sh"
+source "$( cd -P "$( dirname "${0}" )" && pwd )/../cmnlib.sh"
+
+cmn::main::start "${0}" "${1}" "${2}" "${3}"
+
+# -----------------------------------------------------------------------------
 
 # shellcheck disable=SC1091
 source "${buildpack_dir}/VERSIONS"
 # version=2.19.1
 version="${OPENSEARCH_DASHBOARDS_VERSION:-"${OPENSEARCH_DASHBOARDS_DEFAULT_VERSION}"}"
+
+opensearch_gpg_key_url="https://artifacts.opensearch.org/publickeys/opensearch.pgp"
+gpg_key_path="${tmp_dir}/opensearch.gpg"
 
 archive="opensearch-dashboards-${version}.tar.gz"
 file_url="https://artifacts.opensearch.org/releases/bundle/opensearch-dashboards/${version}/opensearch-dashboards-${version}-linux-x64.tar.gz"
@@ -42,10 +34,7 @@ require_download=0
 
 # -----------------------------------------------------------------------------
 
-cmn::main::start
-
 if [ -z "${version}" ]; then
-	cmn::step::fail
 	cmn::output::err <<- EOM
 		Unable to determine the OpenSearch Dashboards version to deploy.
 		Please use the OPENSEARCH_DASHBOARDS_VERSION environment variable to
@@ -55,85 +44,94 @@ if [ -z "${version}" ]; then
 	exit 11
 fi
 
+cmn::output::info "Deploying OpenSearch Dashboards ${version}"
+
+# -----------------------------------------------------------------------------
+
+cmn::step::start "Installing prerequisites"
+
+cmn::task::start "Downloading OpenSearch GPG key"
+if ! cmn::file::download "${opensearch_gpg_key_url}" "${gpg_key_path}"; then
+	cmn::task::fail
+	cmn::step::fail
+
+	exit 12
+fi
+cmn::task::finish
+
+cmn::task::start "Importing OpenSearch GPG key"
+if ! gpg --import "${gpg_key_path}" > /dev/null 2>&1; then
+	cmn::task::fail
+	cmn::step::fail
+
+	exit 13
+fi
+cmn::task::finish
+
+cmn::task::start "Downloading archive signature"
+if ! cmn::file::download "${hash_url}" "${hash_path}"; then
+	cmn::task::fail
+	cmn::step::fail
+
+	exit 14
+fi
+cmn::task::finish
+
+cmn::step::finish
+
 # -----------------------------------------------------------------------------
 
 cmn::step::start "Installing OpenSearch Dashboards"
 
-cmn::output::info "Using OpenSearch Dashboards version ${version}."
-
-if [ -f "${cache_file}" ]; then
-	cmn::output::info "Found matching file in cache."
-	cmn::task::start "Downloading checksum"
-
-	if ! cmn::file::download "${hash_url}" "${hash_path}"; then
+if [ ! -f "${cache_file}" ]; then
+	cmn::task::start "Downloading archive"
+	if ! cmn::file::download "${file_url}" "${file_path}"; then
 		cmn::task::fail
-		# Remove downloaded hash file:
-		rm --force "${hash_path}"
-		cmn::output::info <<- EOM
-			Unable to download the checksum file.
-			Falling back to re-downloading everything.
-		EOM
-	else
-		cmn::task::finish
-
-		cmn::task::start "Checking file validity"
-
-		cmn::output::info "TEMP: Skipping"
-		#cmn::task::finish
-
-		#if ! cmn::file::check_checksum "${cache_file}" "${hash_path}"; then
-			#cmn::task::fail
-			# File in cache does not seem valid, remove it, as well as the hash
-			# file:
-			#rm --force "${cache_file}"
-			#rm --force "${hash_path}"
-		#else
-			# File is in cache, and valid.
-			#cmn::task::finish
-			#require_download=1
-		#fi
-	fi
-fi
-
-if [ $require_download -eq 0 ]; then
-	cmn::task::start "Downloading OpenSearch Dashboards ${version}"
-
-	#if ! cmn::file::download_and_check "${file_url}" "${hash_url}"\
-	#								   "${file_path}" "${hash_path}"
-	if ! cmn::file::download "${file_url}" "${file_path}"
-	then
-		cmn::task::fail "Could not safely download OpenSearch Dashboards ${version}!"
 		cmn::step::fail
+
 		exit 21
 	fi
-
 	cmn::task::finish
 
-	cmn::task::start "Putting OpenSearch Dashboards ${version} in cache for later use"
-
+	cmn::task::start "Putting archive in cache for future use"
 	if ! mv "${file_path}" "${cache_file}"; then
-		cmn::task::fail <<- EOM
-			Unable to store ${archive} in the cache!
-			Aborting.
-		EOM
+		cmn::task::fail
 		cmn::step::fail
+
 		exit 22
 	fi
-
 	cmn::task::finish
+else
+	cmn::output::info "Found matching file in cache."
 fi
+
+cmn::task::start "Checking archive validity"
+if ! gpg --verify "${hash_path}" "${cache_file}" > /dev/null 2>&1; then
+	cmn::task::fail
+	cmn::output::warn <<- EOM
+		Unable to check archive validity.
+		I'm now removing the file from the cache to force
+		a new download during the next deployment attempt.
+	EOM
+
+	# File in cache does not seem valid,
+	# remove it so a future run can be successful
+	rm --force "${cache_file}"
+	cmn::step::fail
+
+	exit 23
+fi
+cmn::task::finish
 
 # From this point we have a valid file in cache.
 
 cmn::task::start "Extracting"
 if ! tar --extract --file="${cache_file}" --directory="${tmp_dir}" 2>/dev/null
 then
-	cmn::task::fail <<- EOM
-		An error occured while extracting the archive.
-		Aborting.
-	EOM
+	cmn::task::fail
 	cmn::step::fail
-	exit 31
+
+	exit 24
 fi
 cmn::task::finish
 
@@ -141,12 +139,10 @@ cmn::task::start "Installing"
 if ! mv "${tmp_dir}/opensearch-dashboards-${version}/"* \
 		--target-directory="${build_dir}" 2>/dev/null
 then
-	cmn::task::fail <<- EOM
-		An error occured while installing the files.
-		Aborting.
-	EOM
+	cmn::task::fail
 	cmn::step::fail
-	exit 32
+
+	exit 25
 fi
 cmn::task::finish
 
@@ -154,15 +150,12 @@ cmn::task::start "Configuring"
 if ! cp "${buildpack_dir}/files/config/opensearch_dashboards.yml" \
 		"${build_dir}/config/opensearch_dashboards.yml" 2>/dev/null
 then
-	cmn::task::fail <<- EOM
-		An error occured while installing the files.
-		Aborting.
-	EOM
+	cmn::task::fail
 	cmn::step::fail
-	exit 33
+
+	exit 26
 fi
 cmn::task::finish
-
 
 cmn::step::finish
 
@@ -180,41 +173,14 @@ if ! cp "${buildpack_dir}/files/profile.d/050-opensearch-dashboards.sh" \
 	"${build_dir}/.profile.d/"
 then
 	cmn::task::fail
+	cmn::step::fail
+
+	exit 30
 fi
 
 cmn::task::finish
 
 cmn::step::finish
-
-# -----------------------------------------------------------------------------
-
-#cmn::step::start "Installing Plugins"
-
-#if [ ! -e "${GRAFANA_PLUGINS}" ]; then
-#	OLD_IFS=${IFS}
-#	IFS=','
-
-#	plugin_dir="${build_dir}/plugins"
-#	mkdir --parents "${plugin_dir}"
-
-#	for plugin in ${GRAFANA_PLUGINS}; do
-#		cmn::task::start "Installing ${plugin}"
-
-#		if ! "${build_dir}/bin/grafana" cli --pluginsDir="${plugin_dir}" \
-#				plugins install "${plugin}" >/dev/null
-#		then
-#			cmn::task::fail <<- EOM
-#				An error occured while installing plugin "${plugin}". Going on.
-#			EOM
-#		else
-#			cmn::task::finish
-#		fi
-#	done
-
-#	IFS=${OLD_IFS}
-#fi
-
-#cmn::step::finish
 
 # -----------------------------------------------------------------------------
 
