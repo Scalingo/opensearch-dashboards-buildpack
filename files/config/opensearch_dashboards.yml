@@ -7,7 +7,6 @@
 #
 opensearch:
   ssl:
-    enabled: true
     verificationMode: none
   requestHeadersAllowlist:
     - authorization

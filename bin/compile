@@ -170,7 +170,7 @@ cmn::task::start "Copying profile.d script"
 mkdir --parents "${build_dir}/.profile.d"
 
 if ! cp "${buildpack_dir}/files/profile.d/050-opensearch-dashboards.sh" \
-	"${build_dir}/.profile.d/"
+	"${build_dir}/.profile.d/" 2>/dev/null
 then
 	cmn::task::fail
 	cmn::step::fail
