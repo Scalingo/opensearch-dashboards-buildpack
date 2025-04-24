@@ -7,6 +7,7 @@
 #
 opensearch:
   ssl:
+    enabled: true
     verificationMode: none
   requestHeadersAllowlist:
     - authorization
@@ -20,7 +21,6 @@ opensearch_security:
     tenants:
       preferred:
         - Private
-        - Global
   readonly_mode:
     roles:
       - kibana_read_only
