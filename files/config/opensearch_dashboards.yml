@@ -16,10 +16,11 @@ opensearch_security:
   cookie:
     secure: true
   multitenancy:
-    enabled: true
+    enabled: false
     tenants:
       preferred:
         - Private
+        - Global
   readonly_mode:
     roles:
       - kibana_read_only
