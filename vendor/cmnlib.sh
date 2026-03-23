@@ -1,11 +1,37 @@
 #!/usr/bin/env bash
+#
+# Please see https://github.com/Scalingo/buildpack-cmnlib for help.
+#
+# Conventions:
+#
+# - Functions prefixed with `_cmn__` are designed for internal use only.
+#   They shouldn't be used outside of cmnlib.
+#
+# - Functions prefixed with `cmn::` are designed for public use.
+#   They are meant to be used in buildpacks code.
+#
+# - Variables starting with `_CMN_` are for internal use only.
+#   They shouldn't be used outside of cmnlib.
+#
+
+
+_CMN_VERSION_=20260320
+
+# If _CMN_LOADED_ is set, this means the library is already sourced.
+# As functions are readonly, we don't want to load it again, as this would
+# cause failures.
+# So, if _CMN_LOADED_ is set, return immediately.
+# Else, set it and load the functions.
+[[ -n "${_CMN_LOADED_}" ]] && return
+_CMN_LOADED_="yes"
+
 
 _cmn__read_lines() {
 #
 ## Internal only
 #
 # Redirects input to stdin, line by line.
-# This allows the `cmn::ouput::` functions to support heredoc.
+# This allows the `cmn::output::` functions to support heredoc.
 #
 
 	if (($#)); then
@@ -79,12 +105,15 @@ _cmn__main_end() {
 	_cmn__trap_teardown
 
 	# Ensure we are back in build_dir:
-	[[ -n "${build_dir:-}" && -d "${build_dir}" ]] \
-		&& pushd "${build_dir}" > /dev/null || true
+	if [[ -n "${build_dir:-}" && -d "${build_dir}" ]]; then
+		pushd "${build_dir}" > /dev/null || true
+	fi
 
-	# Remove tmp_dir:
-	[[ -n "${tmp_dir:-}" && -d "${tmp_dir}" ]] \
-		&& rm -rf -- "${tmp_dir}" || true
+	# Remove tmp_dir, unless _CMN_DEBUG_ is set:
+	if [[ -z "${_CMN_DEBUG_:-}" && -n "${tmp_dir:-}" && -d "${tmp_dir}" ]]
+	then
+		rm -rf -- "${tmp_dir}" || true
+	fi
 }
 
 _cmn__trap_setup() {
@@ -155,7 +184,7 @@ cmn::output::err() {
 	fi
 }
 
-# shellcheck disable=2120
+# shellcheck disable=SC2120
 cmn::output::debug() {
 #
 # Outputs a debug message on stdout.
@@ -165,9 +194,16 @@ cmn::output::debug() {
 # Setting _CMN_DEBUG_ should be reserved for cmnlib itself,
 # or when debugging buildpacks.
 #
+# Since providing args is optional, disable SC2120.
 
 	# Return ASAP if _CMN_DEBUG_ isn't set
 	[[ -z "${_CMN_DEBUG_:-}" ]] && return
+
+	# Return to line if we are in a task to avoid breaking the output:
+	if [[ -n "${_CMN_IN_TASK_:-}" ]]; then
+		printf -- "\n"
+		unset _CMN_IN_TASK_
+	fi
 
 	while IFS= read -r line; do
 		printf " *  %s: %s: %s: %s\n" \
@@ -183,7 +219,7 @@ cmn::output::traceback() {
 # Outputs a traceback to stderr.
 #
 
-	printf " !! Traceback:\n" >&2
+	printf "\n !! Traceback:\n" >&2
 
 	for (( i=1; i<${#FUNCNAME[@]}; i++ )); do
 		>&2 printf " !!   %s: %s: %s\n" \
@@ -215,7 +251,8 @@ cmn::main::start() {
 
 	base_dir="$( cd -P "$( dirname "${1}" )" && pwd )"
 	buildpack_dir="$( readlink -f "${base_dir}/.." )"
-	tmp_dir="$( mktemp --directory --tmpdir="/tmp" --quiet "bp-XXXXXX" )"
+	tmp_dir="$( mktemp --directory --tmpdir="/tmp" --quiet \
+				"buildpack-XXXXXX" )"
 
 	readonly build_dir
 	readonly cache_dir
@@ -301,24 +338,27 @@ cmn::task::finish() {
 # Use this function when the task succeeded.
 #
 
-	if [[ -n "${_CMN_IN_TASK_}" ]]; then
+	if [[ -n "${_CMN_IN_TASK_:-}" ]]; then
 		printf -- "%s\n" "OK."
 		unset _CMN_IN_TASK_
 	fi
 }
 
+# shellcheck disable=SC2120
 cmn::task::fail() {
 #
 # Outputs an error message marking the end of a task.
-# Calls `cmn::ouput::err` with `$1` when `$1` is set.
+# Calls `cmn::output::err` with `$1` when `$1` is set.
+#
+# Since providing args is optional, disable SC2120.
 #
 
-	if [[ -n "${_CMN_IN_TASK_}" ]]; then
+	if [[ -n "${_CMN_IN_TASK_:-}" ]]; then
 		printf -- "%s\n" "Failed."
 		unset _CMN_IN_TASK_
 	fi
 
-	if [[ -n "${1}" ]]; then
+	if [[ -n "${1:-}" ]]; then
 		cmn::output::err "${1}"
 	fi
 }
@@ -341,9 +381,16 @@ cmn::file::validate_checksum() {
 	local -r hash_algo="${hash_file##*.}"
 	local ref_hash
 
-	if ! read -r ref_hash _ < "${hash_file}"; then
-		return 2
-	fi
+	# Reads the whole first line of hash_file
+	# Ensure this command never provokes an exit.
+	# (`read` returns 1 when the file misses a newline at EOF)
+	IFS= read -r line < "${hash_file}" || true
+
+	# Trim starting whitespaces:
+	line=${line#"${line%%[![:space:]]*}"}
+
+	# Retrieves the string before the first whitespace:
+	ref_hash=${line%%[[:space:]]*}
 
 	local rc=1
 
@@ -396,13 +443,14 @@ cmn::file::download() {
 	local -r out="${2:-"-"}"
 
 	cmn::output::debug <<-EOM
-		Downloading "${url}" and saving to "${out}".
+		Downloading: ${url}
+		Saving to:   ${out}
 	EOM
 
 	curl --silent --fail --location \
 		--retry 3 --retry-delay 10 --retry-connrefused \
 		--connect-timeout 10 --max-time 300 \
-		--output "${out}" \
+		--create-dirs --output "${out}" \
 		"${url}"
 
 	return "${?}"
@@ -469,29 +517,6 @@ cmn::jobs::wait() {
 
 
 
-cmn::str::join() {
-#
-# Joins all items into one string, using the given separator as separator.
-#
-
-	local -r separator="${1}"
-	shift
-
-	local res=""
-	local s
-
-	for s in "${@}"; do
-		res+="${separator}${s}"
-	done
-
-	# Remove leading separator:
-	res="${res:${#separator}}"
-
-	printf "%s" "${res}"
-}
-
-
-
 cmn::env::read() {
 #
 # Exports configuration variables of a buildpack's ENV_DIR to environment
@@ -516,16 +541,32 @@ cmn::env::read() {
 }
 
 cmn::env::list() {
+#
+# List environment variables names from ENV_DIR.
+# A few specific ones are voluntarily ignored.
+#
 
 	local -r env_dir="${1}"
-	local -a blocklist=( PATH GIT_DIR CPATH CPPATH )
-	blocklist+=( LD_PRELOAD LIBRARY_PATH LD_LIBRARY_PATH )
-	blocklist+=( JAVA_OPTS JAVA_TOOL_OPTIONS )
-	blocklist+=( BUILDPACK_URL BUILD_DIR )
 
-	[[ -d "${env_dir}" ]] || return 0
-	
-	local -r block_re="^($( cmn::str::join '|' "${blocklist[@]}" ))$"
+	# Use an associative array to store the names of the environment variables
+	# we don't want to list from env_dir.
+	# This associative array is used as a set of forbidden values.
+	# The value (1) of each item is irrevelant, we only care about the keys.
+	# Using this data structure allows us to check if a value exists
+	# with a complexity of O(1).
+	#
+	# Same as:
+	#  blocked[PATH]=1
+	#  blocked[GIT_DIR]=1
+	#  blocked[CPATH]=1
+	#  ...
+	#
+	local -A blocked=(
+		[PATH]=1 [GIT_DIR]=1 [CPATH]=1 [CPPATH]=1
+		[LD_PRELOAD]=1 [LIBRARY_PATH]=1 [LD_LIBRARY_PATH]=1
+		[JAVA_OPTS]=1 [JAVA_TOOL_OPTIONS]=1
+		[BUILDPACK_URL]=1 [BUILD_DIR]=1
+	)
 
 	local f
 	local name
@@ -539,9 +580,9 @@ cmn::env::list() {
 		# For example: f="/app/env/MY_VAR" --> name="MY_VAR"
 		name="${f##*/}"
 
-		# Skip item if matching the regexp:
-		[[ "${name}" =~ ${block_re} ]] && continue
-		
+		# Skip if in blocked:
+		[[ -n "${blocked[${name}]:-}" ]] && continue
+
 		printf '%s\n' "${name}"
 	done
 }
@@ -549,42 +590,134 @@ cmn::env::list() {
 
 
 cmn::bp::run() {
-	local -r buildpack_url="${1}"
-	local -r build_dir="${2}"
-	local -r cache_dir="${3}"
-	local -r env_dir="${4}"
+#
+# Downloads and runs a buildpack.
+#
+
+	local -r builddir="${1}"
+	local -r cachedir="${2}"
+	local -r envdir="${3}"
+	local -r tmpdir="${4}"
+	local -r url="${5}"
+	local -r branch="${6:-""}"
 
 	local rc=0
-	local bp_dir
+	local bpdir
+	local bpout
+	local tech=""
 
-	if ! bp_dir="$( mktemp --directory --tmpdir="/tmp" \
-			--quiet "sub_bp-XXXXXX" )"
+	if ! bpdir="$( mktemp --directory --tmpdir="${tmpdir}" \
+			--quiet "buildpack-XXXXXX" )"
 	then
-		rc=1
+		cmn::main::fail 2 <<-EOM
+			Unable to create temporary directory to store the buildpack.
+			Aborting.
+		EOM
+	fi
+
+	if [[ "${url}" =~ \.tgz$ || "${url}" =~ \.tar\.gz$ ]]; then
+
+		cmn::task::start "Downloading buildpack"
+		local archive="${bpdir}/${url##*/}"
+		cmn::file::download "${url}" "${archive}" \
+			|| cmn::main::fail "${?}" <<-EOM
+				Unable to download the buildpack from ${url}.
+				Common errors include but are not limited to:
+				- Temporary network issue.
+				- Typo in the provided ULR.
+				- Using a URL that requires authentication.
+			EOM
+		cmn::task::finish
+
+		cmn::task::start "Extracting buildpack code"
+		tar --extract --gzip --directory "${bpdir}" --file "${archive}" \
+			--strip-components 1 >/dev/null 2>&1
+		cmn::task::finish
 	else
+		cmn::task::start "Cloning buildpack"
+
 		# If the repo is not reachable, GIT_TERMINAL_PROMPT=0 allows us to fail
 		# instead of asking for credentials
 		GIT_TERMINAL_PROMPT=0 \
-		git clone --quiet --depth=1 "${buildpack_url}" "${bp_dir}" \
-			2>/dev/null \
-			|| cmn::main::fail "${?}"
+		git clone --quiet --depth=1 "${url}" "${bpdir}" 2>/dev/null \
+			|| cmn::main::fail "${?}" <<-EOM
+				Unable to clone the buildpack from ${url}.
+				Common errors include but are not limited to:
+				- Temporary network issue.
+				- Typo in the Git URL.
+				- Using a private repository.
+			EOM
+		cmn::task::finish
 
-		# Runs the buildpack:
-		"${bp_dir}/bin/compile" "${build_dir}" "${cache_dir}" "${env_dir}" \
-			|| cmn::main::fail "${?}"
-
-		# Source `export` file if it exists:
-		if [[ -f "${bp_dir}/export" ]]; then
-			# shellcheck disable=SC1091
-			source "${bp_dir}/export"
+		if [[ -f "${bpdir}/.gitmodules" ]]; then
+			cmn::task::start "Initializing submodule"
+			pushd "${bpdir}" > /dev/null
+			git submodule update --init --recursive 2>/dev/null
+			popd > /dev/null
+			cmn::task::finish
 		fi
 
-		# We really don't want this step to be blocking or causing errors:
-		[[ -n "${bp_dir:-}" && -d "${bp_dir}" ]] \
-			&& rm -rf -- "${bp_dir}" || true
+		if [[ -n "${branch}" ]]; then
+			cmn::task::start "Switching to branch ${branch}"
+			pushd "${bpdir}" > /dev/null
+			git checkout --quiet "${branch}"
+			popd > /dev/null
+			cmn::task::finish
+		fi
 	fi
 
-	return "${rc}"
+	pushd "${bpdir}" > /dev/null
+
+	# Ensure bin/detect and bin/compile are executable:
+	chmod --silent +x "${bpdir}/bin/"{detect,compile}
+
+	cmn::task::start "Detecting technology"
+	if ! tech="$( "${bpdir}/bin/detect" "${builddir}" )"; then
+		cmn::main::fail 2 <<-EOM
+			Application is not compatible with the buildpack.
+			Please see our documentation about buildpacks for more information.
+			You can also reach out to our Support Team.
+			https://doc.scalingo.com/platform/deployment/buildpacks/intro
+		EOM
+	fi
+	cmn::task::finish
+
+	cmn::output::info "Detected technology: ${tech}"
+
+	cmn::task::start "Compiling"
+	if ! bpout="$( "${bpdir}/bin/compile" \
+		"${builddir}" "${cachedir}" "${envdir}" 2>&1 )"
+	then
+		cmn::main::fail 2 <<-EOM
+			An error occured while running the buildpack.
+			Here is the output:
+			${bpout}
+		EOM
+	fi
+	cmn::task::finish
+
+	# Source potential left-behind export script.
+	# This allows to leave a clean environment for the next buildpack.
+	if [[ -e "${bpdir}/export" ]]; then
+		cmn::task::start "Sourcing export script for next buildpack"
+		# shellcheck disable=SC1091
+		source "${bpdir}/export"
+		cmn::task::finish
+	fi
+
+	if [[ -x "${bpdir}/bin/release" ]]; then
+		"${bpdir}/bin/release" "${builddir}" \
+			> "${builddir}/last_pack_release.out"
+	fi
+
+	popd > /dev/null
+
+	# We really don't want this step to be blocking or causing errors:
+	if [[ -z "${_CMN_DEBUG_:-}" && -n "${bpdir:-}" && -d "${bpdir}" ]]; then
+		rm -rf -- "${bpdir}" || true
+	fi
+
+	return 0
 }
 
 
@@ -608,8 +741,6 @@ readonly -f cmn::task::fail
 readonly -f cmn::file::validate_checksum
 readonly -f cmn::file::download
 readonly -f cmn::file::download_and_check
-
-readonly -f cmn::str::join
 
 readonly -f cmn::env::read
 readonly -f cmn::env::list
