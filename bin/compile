@@ -1,196 +1,156 @@
 #!/usr/bin/env bash
 # usage: bin/compile <build_dir> <cache_dir> <env_dir>
 
-cmnlib_url="https://github.com/Scalingo/cmnlib/raw/refs/tags/<version>/cmnlib.sh"
-
-#if ! declare -F cmn::output::info >/dev/null; then
-#	source /dev/stdin <<< \
-#		"$( curl --silent --location --retry 3 "${cmnlib_url}" \
-#		|| printf "echo ' 🗙 Unable to load cmnlib, aborting.' >&2 && exit 1"; )"
-#fi
-
-# shellcheck disable=SC1091
-source "$( cd -P "$( dirname "${0}" )" && pwd )/../cmnlib.sh"
+# shellcheck source=vendor/cmnlib.sh
+source "$( readlink -f "$( dirname "${0}" )/../vendor/cmnlib.sh" )"
 
 cmn::main::start "${0}" "${1}" "${2}" "${3}"
 
 # -----------------------------------------------------------------------------
 
-# shellcheck disable=SC1091
-source "${buildpack_dir}/VERSIONS"
-# version=2.19.1
+# shellcheck source=VERSIONS
+source "${buildpack_dir:?}/VERSIONS"
 version="${OPENSEARCH_DASHBOARDS_VERSION:-"${OPENSEARCH_DASHBOARDS_DEFAULT_VERSION}"}"
 
 opensearch_gpg_key_url="https://artifacts.opensearch.org/publickeys/opensearch.pgp"
-gpg_key_path="${tmp_dir}/opensearch.gpg"
+gpg_key_path="${tmp_dir:?}/opensearch.gpg"
 
 archive="opensearch-dashboards-${version}.tar.gz"
 file_url="https://artifacts.opensearch.org/releases/bundle/opensearch-dashboards/${version}/opensearch-dashboards-${version}-linux-x64.tar.gz"
 hash_url="${file_url}.sig"
-file_path="${tmp_dir}/${archive}"
-hash_path="${tmp_dir}/${archive}.sig"
-cache_file="${cache_dir}/${archive}"
-require_download=0
+
+hash_file="${tmp_dir:?}/${archive}.sig"
+cache_file="${cache_dir:?}/${archive}"
 
 # -----------------------------------------------------------------------------
 
-if [ -z "${version}" ]; then
-	cmn::output::err <<- EOM
-		Unable to determine the OpenSearch Dashboards version to deploy.
-		Please use the OPENSEARCH_DASHBOARDS_VERSION environment variable to
-        specify the version to use.
-		Aborting.
-	EOM
-	exit 11
-fi
-
-cmn::output::info "Deploying OpenSearch Dashboards ${version}"
-
-# -----------------------------------------------------------------------------
-
-cmn::step::start "Installing prerequisites"
+cmn::step::start "Installing OpenSearch Dashboards ${version}"
 
 cmn::task::start "Downloading OpenSearch GPG key"
-if ! cmn::file::download "${opensearch_gpg_key_url}" "${gpg_key_path}"; then
-	cmn::task::fail
-	cmn::step::fail
-
-	exit 12
-fi
+cmn::file::download "${opensearch_gpg_key_url}" "${gpg_key_path}" \
+	|| cmn::main::fail "${?}" <<-EOM
+		Unable to download OpenSearch GPG key.
+		Aborting.
+	EOM
 cmn::task::finish
 
 cmn::task::start "Importing OpenSearch GPG key"
-if ! gpg --import "${gpg_key_path}" > /dev/null 2>&1; then
-	cmn::task::fail
-	cmn::step::fail
-
-	exit 13
-fi
+gpg --import "${gpg_key_path}" >/dev/null 2>&1 \
+	|| cmn::main::fail "${?}" <<-EOM
+		Unable to import OpenSearch GPG key.
+		Aborting.
+	EOM
 cmn::task::finish
 
+# We always check archive validity using a freshly downloaded checksum to
+# detect/prevent immutability issues (i.e. cases where upstream replaces the
+# archive at the same URL/same version number)
+# So let's download the checksum:
 cmn::task::start "Downloading archive signature"
-if ! cmn::file::download "${hash_url}" "${hash_path}"; then
-	cmn::task::fail
-	cmn::step::fail
-
-	exit 14
-fi
+cmn::file::download "${hash_url}" "${hash_file}" \
+	|| cmn::main::fail "${?}" <<-EOM
+		Unable to download signature file.
+		Aborting.
+	EOM
 cmn::task::finish
 
-cmn::step::finish
+if [[ ! -f "${cache_file}" ]]; then
+	# The archive doesn't exist in the cache.
 
-# -----------------------------------------------------------------------------
-
-cmn::step::start "Installing OpenSearch Dashboards"
-
-if [ ! -f "${cache_file}" ]; then
-	cmn::task::start "Downloading archive"
-	if ! cmn::file::download "${file_url}" "${file_path}"; then
-		cmn::task::fail
-		cmn::step::fail
-
-		exit 21
-	fi
+	# Remove any existing cached archive, as they are probably for another
+	# version:
+	cmn::task::start "Cleaning cache"
+	rm --recursive --force "${cache_dir:?}"/opensearch-dashboards-*.tar.gz
 	cmn::task::finish
 
-	cmn::task::start "Putting archive in cache for future use"
-	if ! mv "${file_path}" "${cache_file}"; then
-		cmn::task::fail
-		cmn::step::fail
-
-		exit 22
-	fi
+	# Download appropriate version:
+	cmn::task::start "Downloading archive"
+	cmn::file::download "${file_url}" "${cache_file}" \
+		|| cmn::main::fail "${?}" <<-EOM
+			Unable to download OpenSearch Dashboards archive.
+			Aborting.
+		EOM
 	cmn::task::finish
 else
+	# The archive is in cache.
+
 	cmn::output::info "Found matching file in cache."
 fi
 
+# From this point, we have an archive in cache.
+
+# We always check the archive validity to prevent cache corruption and other
+# issues.
 cmn::task::start "Checking archive validity"
-if ! gpg --verify "${hash_path}" "${cache_file}" > /dev/null 2>&1; then
-	cmn::task::fail
-	cmn::output::warn <<- EOM
-		Unable to check archive validity.
-		I'm now removing the file from the cache to force
-		a new download during the next deployment attempt.
-	EOM
+gpg --verify "${hash_file}" "${cache_file}" >/dev/null 2>&1 \
+	|| {
+		# File in cache does not seem valid,
+		# remove it so a future run can be successful
+		rm --force "${cache_file}"
 
-	# File in cache does not seem valid,
-	# remove it so a future run can be successful
-	rm --force "${cache_file}"
-	cmn::step::fail
+		cmn::main::fail 2 <<-EOM
+			The signature for the archive file in the cache doesn't match
+			what's expected.
 
-	exit 23
-fi
+			Here are the most common causes:
+
+			- The archive file in the cache is corrupt. This can
+			  unfortunately happen, but has no strong consequences. Triggering
+			  a new deployment should fix the issue.
+
+			- A networking issue occurred, causing the downloaded signature
+			  file to be incomplete or corrupt. Triggering a new deployment
+			  should force the platform to download the archive and the
+			  signature again, and the deployment should pass.
+
+			- Upstream replaced the archive and its signature, resulting in the
+			  same version number having a different signatures.
+			  This could mean a malicious threat tampered the source archive
+			  and its signature.
+			  Please check upstream for a potential explanation and make sure
+			  it's still trustable.
+
+			In all cases, the cached archive has been removed to force a new
+			download during the next deployment attempt.
+
+			Aborting.
+		EOM
+	}
 cmn::task::finish
 
 # From this point we have a valid file in cache.
 
 cmn::task::start "Extracting"
-if ! tar --extract --file="${cache_file}" --directory="${tmp_dir}" 2>/dev/null
-then
-	cmn::task::fail
-	cmn::step::fail
-
-	exit 24
-fi
-cmn::task::finish
-
-cmn::task::start "Installing"
-if ! mv "${tmp_dir}/opensearch-dashboards-${version}/"* \
-		--target-directory="${build_dir}" 2>/dev/null
-then
-	cmn::task::fail
-	cmn::step::fail
-
-	exit 25
-fi
+tar --extract --file="${cache_file}" --directory="${build_dir:?}" \
+	--strip-components=1 2>/dev/null
 cmn::task::finish
 
 cmn::task::start "Configuring"
-if ! cp "${buildpack_dir}/files/config/opensearch_dashboards.yml" \
-		"${build_dir}/config/opensearch_dashboards.yml" 2>/dev/null
-then
-	cmn::task::fail
-	cmn::step::fail
-
-	exit 26
-fi
+cp "${buildpack_dir:?}/vendor/config/opensearch_dashboards.yml" \
+	"${build_dir:?}/config/opensearch_dashboards.yml" 2>/dev/null
 cmn::task::finish
-
-cmn::step::finish
 
 # -----------------------------------------------------------------------------
 
 cmn::step::start "Building Environment"
 
-export PATH="${build_dir}/bin:${PATH}"
-
-cmn::task::start "Copying profile.d script"
-
-mkdir --parents "${build_dir}/.profile.d"
-
-if ! cp "${buildpack_dir}/files/profile.d/050-opensearch-dashboards.sh" \
-	"${build_dir}/.profile.d/" 2>/dev/null
-then
-	cmn::task::fail
-	cmn::step::fail
-
-	exit 30
-fi
-
+cmn::task::start "Upgrading PATH"
+export PATH="${build_dir:?}/bin:${PATH}"
 cmn::task::finish
 
-cmn::step::finish
+cmn::task::start "Copying profile.d script"
+mkdir --parents "${build_dir:?}/.profile.d"
+cp "${buildpack_dir:?}/vendor/profile.d/050-opensearch-dashboards.sh" \
+	"${build_dir:?}/.profile.d/" 2>/dev/null
+cmn::task::finish
 
 # -----------------------------------------------------------------------------
 
 cmn::step::start "Cleaning up"
 
 cmn::task::start "Removing temporary files"
-rm --recursive --force "${tmp_dir}"
+rm --recursive --force "${tmp_dir:?}" >/dev/null 2>&1 || true
 cmn::task::finish
-
-cmn::step::finish
 
 
 cmn::main::finish
